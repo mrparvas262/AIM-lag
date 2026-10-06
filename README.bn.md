@@ -8,13 +8,12 @@
 
 ## কী পরিবর্তন করা হয়েছে
 
-`aimlag-freefiremax-android10.apk`-এ একই target package-টি তিন জায়গায় Free Fire MAX-এ বদলানো হয়েছে:
+প্রথম patch approach-এ এক অক্ষর বড় package ID বসাতে গিয়ে DEX string-ID order নষ্ট হওয়ার ঝুঁকি ছিল; Android 10 এটিকে process crash হিসেবে দেখাতে পারে। বর্তমান build-এ DEX layout অপরিবর্তিত রেখে নিরাপদে দুইটি call বাদ দেওয়া হয়েছে:
 
-1. অ্যাপ ইনস্টল আছে কি না পরীক্ষা;
-2. VPN-এর allowed-application scope;
-3. VPN চালুর পরে যে game app খোলা হয়।
+1. standard Free Fire package না থাকলে যে target-check ব্যর্থ হতো, সেটি আর Start আটকে রাখে না;
+2. অনুপস্থিত standard Free Fire-এর জন্য VPN allow-list তৈরির call বাদ দেওয়া হয়েছে, যাতে `NameNotFoundException` না হয়।
 
-এতে Start চাপলে Free Fire MAX শনাক্ত হওয়ার পর Android-এর স্বাভাবিক VPN permission dialog আসবে। লাইসেন্স/লগইন যাচাই পরিবর্তন করা হয়নি।
+ফলে Start চাপলে Android-এর স্বাভাবিক VPN permission dialog আসবে এবং Free Fire MAX চলতে পারবে। এই build চলার সময় VPN-টি app-specific না হয়ে device-wide হতে পারে; দরকার না থাকলে Stop চাপুন। Free Fire MAX নিজে থেকে launch নাও হতে পারে—VPN allow করার পরে সেটি হাতে করে খুলুন। লাইসেন্স/লগইন যাচাই পরিবর্তন করা হয়নি।
 
 ## ইনস্টল করার নিয়ম (Xiaomi / Android 10)
 

@@ -1,12 +1,16 @@
 #!/usr/bin/env python3
-"""Create a Free Fire MAX-compatible, APK-v1-signed AIM Lag build.
+"""Create an Android-10-sideloadable AIM Lag build for Free Fire MAX.
 
-The original APK hard-codes ``com.dts.freefireth`` in its Android VPN bridge.
-As a result, a phone with only Free Fire MAX (``com.dts.freefiremax``) reports
-that the target is absent and never reaches ``VpnService.prepare()``.  This
-patch redirects that DEX string to the MAX package, recalculates the DEX
-integrity fields, then creates a fresh APK v1 signature suitable for Android
-10 sideloading.
+The original APK hard-codes ``com.dts.freefireth`` (standard Free Fire) in
+its Android VPN bridge. A phone with only Free Fire MAX therefore reports
+that the target is absent and never reaches ``VpnService.prepare()``.
+
+A direct string replacement makes the DEX string-ID table non-canonical and
+causes Android 10's DEX verifier to kill the process. Instead, this patch
+makes the target-installed check succeed and removes the stale single-package
+allow-list call. The service then starts for Free Fire MAX and Android can
+show its normal VPN permission prompt. It recalculates DEX integrity fields
+and creates a fresh APK v1 signature suitable for Android 10 sideloading.
 
 Usage:
     python3 tools/patch_freefiremax_apk.py original.apk aimlag-freefiremax.apk
@@ -31,16 +35,13 @@ import zlib
 import zipfile
 
 SOURCE_PACKAGE = b"com.dts.freefireth"
-MAX_PACKAGE = b"com.dts.freefiremax"
-# This inert EXIF field name is exactly the same byte/UTF-16 length as
-# MAX_PACKAGE. Its data record can safely be reused without changing any DEX
-# table offsets. Keeping operational VPN error strings intact is useful when
-# a user needs to diagnose a later connection failure.
-REUSABLE_STRING = b"ISOSpeedLatitudezzz"
-LOG_SOURCE = b"tunnel up, scoped to com.dts.freefireth"
-# A fixed-width status message lets the existing DEX string record be updated
-# in place; the padding is only present in the diagnostic log line.
-LOG_TARGET = b"tunnel up, scoped to Free Fire MAX     "
+
+# Exact six-byte Dalvik invoke-virtual instructions in the supplied APK's
+# classes.dex. Each is replaced with three NOP instructions, retaining every
+# code offset, register count, branch target and DEX string-ID table entry.
+TARGET_INSTALLED_CALL = bytes.fromhex("6e307b050d02")
+ALLOWED_APPLICATION_CALL = bytes.fromhex("6e20f9052d00")
+NOP_INSTRUCTIONS = b"\x00" * 6
 
 SIGNATURE_FILES = {
     "META-INF/MANIFEST.MF",
@@ -79,46 +80,31 @@ def dex_string_ids(data: bytearray) -> list[tuple[int, int, bytes]]:
 
 
 def patch_dex_for_freefire_max(dex: bytes) -> bytes:
-    """Redirect the original target-package string to Free Fire MAX.
+    """Allow the supplied APK to start its VPN when only Free Fire MAX exists.
 
-    DEX instructions reference string IDs, not string bytes.  The MAX package
-    is one character longer than the original.  To avoid rebuilding DEX code,
-    a same-length diagnostic-string record is replaced with the MAX package
-    and the original string ID is pointed at that record.
+    The original target-app probe throws ``NameNotFoundException`` for MAX,
+    which makes the Flutter UI decline to start. The original service also
+    throws while adding the absent standard-Free-Fire package to its VPN
+    allow-list. Replacing those two calls with NOPs keeps DEX layout stable:
+    the pre-initialised target result remains ``true`` and the service starts
+    without a stale package-specific allow-list.
     """
     data = bytearray(dex)
-    strings = dex_string_ids(data)
-    source_ids = [index for index, _offset, text in strings if text == SOURCE_PACKAGE]
-    reusable = [(index, offset) for index, offset, text in strings if text == REUSABLE_STRING]
-    log_records = [offset for _index, offset, text in strings if text == LOG_SOURCE]
-
+    source_ids = [index for index, _offset, text in dex_string_ids(data) if text == SOURCE_PACKAGE]
     if len(source_ids) != 1:
         raise ValueError(
             f"Expected one {SOURCE_PACKAGE.decode()} DEX string, found {len(source_ids)}"
         )
-    if len(reusable) != 1:
-        raise ValueError("The expected reusable DEX string record was not found")
-    if len(log_records) != 1:
-        raise ValueError("The expected tunnel-up diagnostic record was not found")
-    if len(MAX_PACKAGE) != len(REUSABLE_STRING):
-        raise AssertionError("The DEX string replacement must retain its size")
-    if len(LOG_SOURCE) != len(LOG_TARGET):
-        raise AssertionError("The tunnel-up diagnostic replacement must retain its size")
 
-    source_id = source_ids[0]
-    _reusable_id, reusable_offset = reusable[0]
-    _, reusable_text_offset = read_uleb128(data, reusable_offset)
-    _, log_text_offset = read_uleb128(data, log_records[0])
-
-    # Original and replacement both have a one-byte ULEB length and 19 ASCII
-    # characters, so this leaves the following DEX data item untouched.
-    data[reusable_offset] = len(MAX_PACKAGE)
-    data[reusable_text_offset : reusable_text_offset + len(MAX_PACKAGE)] = MAX_PACKAGE
-    data[reusable_text_offset + len(MAX_PACKAGE)] = 0
-    data[log_text_offset : log_text_offset + len(LOG_TARGET)] = LOG_TARGET
-
-    _string_count, string_ids_offset = struct.unpack_from("<II", data, 56)
-    struct.pack_into("<I", data, string_ids_offset + source_id * 4, reusable_offset)
+    for label, instruction in (
+        ("target-installed package probe", TARGET_INSTALLED_CALL),
+        ("stale VPN allowed-application call", ALLOWED_APPLICATION_CALL),
+    ):
+        occurrences = data.count(instruction)
+        if occurrences != 1:
+            raise ValueError(f"Expected one {label}, found {occurrences}")
+        offset = data.index(instruction)
+        data[offset : offset + len(instruction)] = NOP_INSTRUCTIONS
 
     # DEX SHA-1 covers bytes from offset 32. Adler-32 covers bytes from offset 12.
     data[12:32] = hashlib.sha1(data[32:]).digest()
